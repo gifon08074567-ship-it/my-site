@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Terraria Crafting & Beach Fix</title>
+    <style>
+        * { 
+            box-sizing: border-box; margin: 0; padding: 0; 
+            user-select: none; -webkit-user-select: none; 
+            touch-action: none; -webkit-touch-callout: none;
+        }
+        body, html { width: 100%; height: 100%; overflow: hidden; background-color: #0d1117; font-family: sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; background-color: #87CEEB; }
+        
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+        }
+        #move-controls {
+            position: absolute; bottom: 40px; left: 30px;
+            display: flex; gap: 20px; pointer-events: auto;
+        }
+        .btn-dir {
+            width: 80px; height: 80px; background: rgba(255, 255, 255, 0.15);
+            border: 3px solid rgba(255, 255, 255, 0.4); border-radius: 20px;
+            display: flex; align-items: center; justify-content: center;
+            color: white; font-size: 36px; box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+        }
+        .btn-dir:active { background: rgba(255, 255, 255, 0.35); }
+
+        #btn-jump {
+            position: absolute; bottom: 40px; right: 40px;
+            width: 90px; height: 90px; background: rgba(255, 255, 255, 0.15);
+            border: 3px solid rgba(255, 255, 255, 0.4); border-radius: 50%;
+            pointer-events: auto; display: flex; align-items: center; justify-content: center;
+            color: white; font-size: 40px; box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+        }
+        #btn-jump:active { background: rgba(255, 255, 255, 0.35); }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <div id="move-controls">
+            <div class="btn-dir" id="btn-left">◀</div>
+            <div class="btn-dir" id="btn-right">▶</div>
+        </div>
+        <div id="btn-jump">▲</div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener("resize", resize);
+        resize();
+
+        document.addEventListener("touchmove", (e) => { e.preventDefault(); }, { passive: false });
+
+        const TILE_SIZE = 32;
+        const WORLD_WIDTH = 100;
+        const WORLD_HEIGHT = 40;
+        const GRAVITY = 0.4;
+
+        const TILE_AIR = 0;
+        const TILE_DIRT = 1;
+        const TILE_GRASS = 2;
+        const TILE_STONE = 3;
+        const TILE_WOOD = 4;
+        const TILE_COAL = 5; 
+        const TILE_IRON = 6; 
+        const TILE_WATER = 7;
+        const TILE_SAND = 8; 
+        const TILE_WORKBENCH = 9;
+        const TILE_PLANKS = 10;
+        const TILE_FURNACE = 11;
+
+        const ITEM_IRON_BAR = 101; 
+        const ITEM_IRON_PICKAXE = 102; 
+        const ITEM_IRON_AXE = 103;
+
+        const world = Array(WORLD_HEIGHT).fill().map(() => Array(WORLD_WIDTH).fill(TILE_AIR));
+        const surfaceHeights = [];
+        let treeLeavesData = []; 
+
+        const SEA_LEVEL = 20; 
+
+        for (let c = 0; c < WORLD_WIDTH; c++) {
+            let tY = 18; 
+
+            if (c <= 14) {
+                if (c < 6) tY = 18 + (6 - c) * 1.2;
+                else tY = 18;
+            } else if (c >= 85) {
+                if (c > 93) tY = 18 + (c - 93) * 1.2;
+                else tY = 18;
+            } else {
+                tY = Math.floor(18 + Math.sin(c * 0.15) * 1.2);
+            }
+
+            surfaceHeights[c] = Math.floor(tY);
+
+            for (let r = 0; r < WORLD_HEIGHT; r++) {
+                let isBeachZone = (c <= 14 || c >= 85);
+
+                if (r < surfaceHeights[c]) {
+                    if (isBeachZone && r >= SEA_LEVEL) {
+                        world[r][c] = TILE_WATER;
+                    }
+                } else if (r === surfaceHeights[c]) {
+                    world[r][c] = isBeachZone ? TILE_SAND : TILE_GRASS;
+                } else if (r > surfaceHeights[c] && r < surfaceHeights[c] + 6) {
+                    world[r][c] = isBeachZone ? TILE_SAND : TILE_DIRT; 
+                } else if (r >= surfaceHeights[c] + 6) {
+                    world[r][c] = TILE_STONE;
+                    if (!isBeachZone && r >= surfaceHeights[c] + 8 && Math.random() < 0.08) world[r][c] = TILE_COAL;
+                    else if (!isBeachZone && r >= surfaceHeights[c] + 11 && Math.random() < 0.06) world[r][c] = TILE_IRON;
+                }
+            }
+        }
+        for (let c = 18; c < WORLD_WIDTH - 18; c += Math.floor(5 + Math.random() * 4)) {
+            let groundY = surfaceHeights[c];
+            let treeHeight = Math.floor(4 + Math.random() * 3);
+            for (let i = 1; i <= treeHeight; i++) {
+                world[groundY - i][c] = TILE_WOOD;
+            }
+            treeLeavesData.push({ treeX: c, cx: c * TILE_SIZE + TILE_SIZE / 2, cy: (groundY - treeHeight) * TILE_SIZE, radius: 46 });
+        }
+
+        const player = {
+            x: 800, y: 0, width: 20, height: 42, 
+            vx: 0, vy: 0, speed: 3.2, jumpForce: 9.5,
+            grounded: false, dir: 1,
+            hp: 100, maxHp: 100,
+            pickaxeTier: 1, axeTier: 1 
+        };
+
+        function spawnPlayerCorrectly() {
+            let startBlockC = Math.floor(player.x / TILE_SIZE);
+            let groundRow = surfaceHeights[startBlockC];
+            player.y = (groundRow * TILE_SIZE) - player.height - 10;
+        }
+        spawnPlayerCorrectly();
+
+        const camera = { x: 0, y: 0 };
+        let isMovingLeft = false; let isMovingRight = false; let inputJump = false; let lastAirY = player.y;
+
+        let activeSlotIndex = 0; 
+        let isInventoryOpen = false; 
+        let isWorkbenchOpen = false; 
+        let isFurnaceOpen = false; 
+        function isAnyMenuOpen() { return isInventoryOpen || isWorkbenchOpen || isFurnaceOpen; }
+        function closeAllMenus() { isInventoryOpen = false; isWorkbenchOpen = false; isFurnaceOpen = false; }
+        function getActiveMenuRecipes() { if (isInventoryOpen) return craftRecipes; if (isWorkbenchOpen) return workbenchRecipes; if (isFurnaceOpen) return furnaceRecipes; return []; }
+        function getActiveMenuTitle() { if (isInventoryOpen) return "РЮКЗАК"; if (isWorkbenchOpen) return "ВЕРСТАК"; if (isFurnaceOpen) return "ПЕЧЬ"; return ""; }
+
+        let hotbarSlots = [
+            { type: "tool", id: "pickaxe", count: 1, blockId: 0, label: "Медная кирка" },
+            { type: "tool", id: "axe", count: 1, blockId: 0, label: "Топор" },
+            { type: "empty", id: null, count: 0, blockId: 0 },
+            { type: "empty", id: null, count: 0, blockId: 0 },
+            { type: "empty", id: null, count: 0, blockId: 0 }
+        ];
+
+        const inventorySlots = Array(20).fill(null).map(() => ({ type: "empty", id: null, count: 0, blockId: 0 }));
+        const slotItemsMapping = [0, TILE_DIRT, TILE_STONE, TILE_WOOD, TILE_SAND];
+
+        const UI_SLOT_SIZE = 50;
+        const UI_SLOT_GAP = 8;
+        const UI_START_X = 15;
+        const UI_START_Y = 15;
+        const INV_BTN_Y = 15;
+        const INV_BTN_SIZE = 46;
+
+        const INV_MENU_WIDTH = 420; 
+        const INV_MENU_HEIGHT = 250;
+
+        const craftRecipes = [
+            { id: "workbench", resultId: TILE_WORKBENCH, resultType: "block", req: [{ id: TILE_WOOD, count: 3 }], label: "Верстак" }
+        ];
+
+        const workbenchRecipes = [
+            { id: "planks", resultId: TILE_PLANKS, resultType: "block", resultCount: 2, req: [{ id: TILE_WOOD, count: 1 }], label: "Доски" },
+            { id: "furnace", resultId: TILE_FURNACE, resultType: "block", req: [{ id: TILE_STONE, count: 5 }], label: "Печь" },
+            { id: "iron_pick", resultId: ITEM_IRON_PICKAXE, resultType: "tool", req: [{ id: ITEM_IRON_BAR, count: 3 }, { id: TILE_PLANKS, count: 2 }], label: "Жел. Кирка" },
+            { id: "iron_axe", resultId: ITEM_IRON_AXE, resultType: "tool", req: [{ id: ITEM_IRON_BAR, count: 3 }, { id: TILE_PLANKS, count: 2 }], label: "Жел. Топор" }
+        ];
+
+        const furnaceRecipes = [
+            { id: "iron_bar", resultId: ITEM_IRON_BAR, resultType: "item", req: [{ id: TILE_COAL, count: 1 }, { id: TILE_IRON, count: 1 }], label: "Жел. Слиток" }
+        ];
+        
+        let mineProgress = 0; let isMining = false; let targetBlockC = null; let targetBlockR = null; let requiredMineTime = 0; let lastMineTime = 0;
+
+        const bLeft = document.getElementById("btn-left"); const bRight = document.getElementById("btn-right"); const bJump = document.getElementById("btn-jump");
+        bLeft.addEventListener("pointerdown", (e) => { e.preventDefault(); if (isAnyMenuOpen()) return; isMovingLeft = true; player.dir = -1; });
+        bLeft.addEventListener("pointerup", (e) => { e.preventDefault(); isMovingLeft = false; });
+        bLeft.addEventListener("pointercancel", (e) => { e.preventDefault(); isMovingLeft = false; });
+        bRight.addEventListener("pointerdown", (e) => { e.preventDefault(); if (isAnyMenuOpen()) return; isMovingRight = true; player.dir = 1; });
+        bRight.addEventListener("pointerup", (e) => { e.preventDefault(); isMovingRight = false; });
+        bRight.addEventListener("pointercancel", (e) => { e.preventDefault(); isMovingRight = false; });
+        bJump.addEventListener("pointerdown", (e) => { e.preventDefault(); if (isAnyMenuOpen()) return; inputJump = true; });
+        bJump.addEventListener("pointerup", (e) => { e.preventDefault(); inputJump = false; });
+        bJump.addEventListener("pointercancel", (e) => { e.preventDefault(); inputJump = false; });
+
+        function stopMining() { isMining = false; mineProgress = 0; targetBlockC = null; targetBlockR = null; requiredMineTime = 0; }
+
+        function getMiningTimeForTile(tile) {
+            let activeItem = hotbarSlots[activeSlotIndex];
+            if (activeSlotIndex === 0 && activeItem.id === "pickaxe") {
+                let speedMod = (player.pickaxeTier === 2) ? 1.8 : 1.0;
+                if (tile === TILE_SAND) return 800 / speedMod;
+                if (tile === TILE_DIRT || tile === TILE_GRASS) return 1000 / speedMod;
+                if (tile === TILE_STONE) return 2000 / speedMod;
+                if (tile === TILE_WORKBENCH) return 1200 / speedMod;
+                if (tile === TILE_PLANKS) return 900 / speedMod;
+                if (tile === TILE_FURNACE) return 2200 / speedMod;
+                if (tile === TILE_COAL || tile === TILE_IRON) return 2500 / speedMod;
+                return null;
+            } else if (activeSlotIndex === 1 && activeItem.id === "axe") {
+                let axeSpeedMod = (player.axeTier === 2) ? 1.8 : 1.0;
+                if (tile === TILE_WOOD) return 5000 / axeSpeedMod;
+                return null;
+            }
+            return null;
+        }
+
+        function isBlockInRange(blockC, blockR) {
+            let pLeftC = Math.floor(player.x / TILE_SIZE); let pRightC = Math.floor((player.x + player.width) / TILE_SIZE);
+            let pTopR = Math.floor(player.y / TILE_SIZE); let pBottomR = Math.floor((player.y + player.height) / TILE_SIZE);
+            let distC = 0; if (blockC < pLeftC) distC = pLeftC - blockC; else if (blockC > pRightC) distC = blockC - pRightC;
+            let distR = 0; if (blockR < pTopR) distR = pTopR - blockR; else if (blockR > pBottomR) distR = blockR - pBottomR;
+            return (distC <= 1 && distR <= 1);
+        }
+
+        function hasNeighborBlock(c, r) {
+            const neighbors = [{ c: c - 1, r: r }, { c: c + 1, r: r }, { c: c, r: r - 1 }, { c: c, r: r + 1 }];
+            for (let n of neighbors) { if (n.c >= 0 && n.c < WORLD_WIDTH && n.r >= 0 && n.r < WORLD_HEIGHT) { if (world[n.r][n.c] !== TILE_AIR && world[n.r][n.c] !== TILE_WATER) return true; } }
+            return false; 
+        }
+
+        function getCountInInventory(id) {
+            let total = 0;
+            for (let slot of hotbarSlots) {
+                if (slot.type === "block" && slot.blockId === id) total += slot.count;
+                if (slot.type === "crafted_item" && slot.blockId === id) total += slot.count;
+            }
+            for (let slot of inventorySlots) {
+                if (slot.type === "block" && slot.blockId === id) total += slot.count;
+                if (slot.type === "crafted_item" && slot.blockId === id) total += slot.count;
+            }
+            return total;
+        }
+        function removeItemsFromInventory(id, countToRemove) {
+            let remaining = countToRemove;
+            for (let slot of hotbarSlots) {
+                if ((slot.type === "block" || slot.type === "crafted_item") && slot.blockId === id) {
+                    if (slot.count >= remaining) { slot.count -= remaining; remaining = 0; } 
+                    else { remaining -= slot.count; slot.count = 0; }
+                    if (slot.count <= 0) { slot.type = "empty"; slot.id = null; slot.blockId = 0; }
+                    if (remaining === 0) return;
+                }
+            }
+            for (let slot of inventorySlots) {
+                if ((slot.type === "block" || slot.type === "crafted_item") && slot.blockId === id) {
+                    if (slot.count >= remaining) { slot.count -= remaining; remaining = 0; } 
+                    else { remaining -= slot.count; slot.count = 0; }
+                    if (slot.count <= 0) { slot.type = "empty"; slot.id = null; slot.blockId = 0; }
+                    if (remaining === 0) return;
+                }
+            }
+        }
+
+        function triggerCraft(recipe) {
+            for (let reqItem of recipe.req) {
+                if (getCountInInventory(reqItem.id) < reqItem.count) return; 
+            }
+            for (let reqItem of recipe.req) {
+                removeItemsFromInventory(reqItem.id, reqItem.count);
+            }
+            if (recipe.resultType === "tool" && recipe.resultId === ITEM_IRON_PICKAXE) {
+                hotbarSlots[0] = { type: "tool", id: "pickaxe", count: 1, blockId: 0, label: "Железная кирка" };
+                player.pickaxeTier = 2; 
+            } else if (recipe.resultType === "tool" && recipe.resultId === ITEM_IRON_AXE) {
+                hotbarSlots[1] = { type: "tool", id: "axe", count: 1, blockId: 0, label: "Железный топор" };
+                player.axeTier = 2; 
+            } else if (recipe.resultType === "block") {
+                let craftCount = recipe.resultCount || 1;
+                for (let i = 0; i < craftCount; i++) addItemToInventorySystem(recipe.resultId, false);
+            } else {
+                addItemToInventorySystem(recipe.resultId, true);
+            }
+        }
+
+        function handlePointerTap(clientX, clientY) {
+            let dynamicBtnX = canvas.width - 70;
+
+            if (clientX >= dynamicBtnX && clientX <= dynamicBtnX + INV_BTN_SIZE && clientY >= INV_BTN_Y && clientY <= INV_BTN_Y + INV_BTN_SIZE) {
+                isWorkbenchOpen = false; isFurnaceOpen = false; isInventoryOpen = !isInventoryOpen; isMovingLeft = isMovingRight = inputJump = false; stopMining(); return;
+            }
+
+            if (isAnyMenuOpen()) {
+                let activeRecipes = getActiveMenuRecipes();
+                let mX = (canvas.width - INV_MENU_WIDTH) / 2;
+                let mY = (canvas.height - INV_MENU_HEIGHT) / 2;
+
+                if (clientX >= mX + INV_MENU_WIDTH - 30 && clientX <= mX + INV_MENU_WIDTH - 10 && clientY >= mY + 10 && clientY <= mY + 30) {
+                    closeAllMenus(); return;
+                }
+
+                let craftStartX = mX + 20;
+                let craftStartY = mY + 45;
+                if (clientX >= craftStartX && clientX <= craftStartX + 100) {
+                    for (let i = 0; i < activeRecipes.length; i++) {
+                        let btnY = craftStartY + i * 36;
+                        if (clientY >= btnY && clientY <= btnY + 30) {
+                            triggerCraft(activeRecipes[i]); 
+                            return;
+                        }
+                    }
+                }
+
+                for (let i = 2; i < 5; i++) {
+                    let sX = UI_START_X + i * (UI_SLOT_SIZE + UI_SLOT_GAP); let sY = UI_START_Y;
+                    if (clientX >= sX && clientX <= sX + UI_SLOT_SIZE && clientY >= sY && clientY <= sY + UI_SLOT_SIZE) {
+                        let hotItem = hotbarSlots[i];
+                        if (hotItem.type === "block" || hotItem.type === "crafted_item") {
+                            for (let j = 0; j < 20; j++) {
+                                if (inventorySlots[j].type === hotItem.type && inventorySlots[j].blockId === hotItem.blockId) {
+                                    inventorySlots[j].count += hotItem.count; hotbarSlots[i] = { type: "empty", id: null, count: 0, blockId: 0 }; return;
+                                }
+                            }
+                            for (let j = 0; j < 20; j++) {
+                                if (inventorySlots[j].type === "empty") {
+                                    inventorySlots[j] = { type: hotItem.type, id: null, count: hotItem.count, blockId: hotItem.blockId }; hotbarSlots[i] = { type: "empty", id: null, count: 0, blockId: 0 }; return;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
+
+                let gridStartX = mX + 140; 
+                let gridStartY = mY + 45; 
+                let sSize = 42; let sGap = 6;
+                for (let r = 0; r < 4; r++) {
+                    for (let c = 0; c < 5; c++) {
+                        let slotX = gridStartX + c * (sSize + sGap); let slotY = gridStartY + r * (sSize + sGap); let index = r * 5 + c;
+
+                        if (clientX >= slotX && clientX <= slotX + sSize && clientY >= slotY && clientY <= slotY + sSize) {
+                            let selectedBlock = inventorySlots[index];
+                            if (selectedBlock.type === "block" || selectedBlock.type === "crafted_item") {
+                                for (let h = 2; h < 5; h++) {
+                                    if (hotbarSlots[h].type === "empty" || hotbarSlots[h].blockId === selectedBlock.blockId) {
+                                        hotbarSlots[h].type = selectedBlock.type; hotbarSlots[h].blockId = selectedBlock.blockId; hotbarSlots[h].count += selectedBlock.count;
+                                        inventorySlots[index] = { type: "empty", id: null, count: 0, blockId: 0 }; return;
+                                    }
+                                                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            for (let i = 0; i < 5; i++) {
+                let sX = UI_START_X + i * (UI_SLOT_SIZE + UI_SLOT_GAP); let sY = UI_START_Y;
+                if (clientX >= sX && clientX <= sX + UI_SLOT_SIZE && clientY >= sY && clientY <= sY + UI_SLOT_SIZE) { activeSlotIndex = i; stopMining(); return; }
+            }
+
+            let worldX = clientX + camera.x; let worldY = clientY + camera.y;
+            let blockC = Math.floor(worldX / TILE_SIZE); let blockR = Math.floor(worldY / TILE_SIZE);
+            if (blockC < 0 || blockC >= WORLD_WIDTH || blockR < 0 || blockR >= WORLD_HEIGHT) return;
+            let currentTile = world[blockR][blockC]; let activeItem = hotbarSlots[activeSlotIndex];
+
+            if (!isBlockInRange(blockC, blockR)) { stopMining(); return; }
+            if (currentTile === TILE_WATER) return; 
+
+            if ((currentTile === TILE_WORKBENCH || currentTile === TILE_FURNACE) && !(activeSlotIndex === 0 && activeItem.id === "pickaxe")) {
+                if (currentTile === TILE_WORKBENCH) is
